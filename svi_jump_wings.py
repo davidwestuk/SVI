@@ -12,12 +12,14 @@ class SVIJumpWings:
     """
     SVI Jump Wings (natural) parameterization of the implied variance surface.
 
-    Parameters correspond to physical characteristics of w(k, T) at a single maturity T:
-      w0         : ATM implied variance       (w(0, T))
+    Parameters correspond to physical characteristics of w(K, T) at a single maturity T:
+      w0         : ATM implied variance       (w(F, T))
       w1         : ATM variance skew          (∂w/∂k at k=0)
       w2         : ATM variance curvature     (∂²w/∂k² at k=0)
       beta_minus : left-wing (put) slope  — lim_{k→-∞} w/k = b(ρ - 1)
       beta_plus  : right-wing (call) slope — lim_{k→+∞} w/k = b(ρ + 1)
+      F          : forward price
+      T          : maturity in years
 
     Reference: Gatheral (2004), Gatheral & Jacquier (2013),
                Numerix SVI Volatility Surface (2024).
@@ -27,6 +29,8 @@ class SVIJumpWings:
     w2: float
     beta_minus: float
     beta_plus: float
+    F: float
+    T: float
 
     # ------------------------------------------------------------------ #
     # Internal helpers                                                     #
@@ -87,115 +91,117 @@ class SVIJumpWings:
     # Core formula and derivatives                                         #
     # ------------------------------------------------------------------ #
 
-    def implied_variance(self, k: Strikes) -> float | np.ndarray:
+    def implied_variance(self, K: Strikes) -> float | np.ndarray:
         """
-        Implied Black-Scholes total variance w(k).
-        w = a + b[ρ(k−m) + sqrt(σ²+(k−m)²)]
+        Implied Black-Scholes total variance w(K).
+        w = a + b[ρ(k−m) + sqrt(σ²+(k−m)²)], where k = log(K/F)
 
         Parameters
         ----------
-        k : log-strike(s) log(K/F). Accepts float, list[float], or np.ndarray.
+        K : strike price(s). Accepts float, list[float], or np.ndarray.
 
         Returns
         -------
-        float if k was scalar, np.ndarray otherwise.
+        float if K was scalar, np.ndarray otherwise.
         """
-        k_arr, scalar = self._to_array(k)
+        K_arr, scalar = self._to_array(K)
+        k_arr = np.log(K_arr / self.F)
         a, b, m, sigma, rho = self.a, self.b, self.m, self.sigma, self.rho
         d = k_arr - m
         result = a + b * (rho * d + np.sqrt(sigma ** 2 + d ** 2))
         return self._maybe_scalar(result, scalar)
 
-    def dw_dk(self, k: Strikes) -> float | np.ndarray:
+    def dw_dk(self, K: Strikes) -> float | np.ndarray:
         """
-        First derivative ∂w/∂k.
+        First derivative ∂w/∂k evaluated at k = log(K/F).
 
         Parameters
         ----------
-        k : log-strike(s). Accepts float, list[float], or np.ndarray.
+        K : strike price(s). Accepts float, list[float], or np.ndarray.
 
         Returns
         -------
-        float if k was scalar, np.ndarray otherwise.
+        float if K was scalar, np.ndarray otherwise.
         """
-        k_arr, scalar = self._to_array(k)
+        K_arr, scalar = self._to_array(K)
+        k_arr = np.log(K_arr / self.F)
         b, m, sigma, rho = self.b, self.m, self.sigma, self.rho
         d = k_arr - m
         result = b * (rho + d / np.sqrt(sigma ** 2 + d ** 2))
         return self._maybe_scalar(result, scalar)
 
-    def d2w_dk2(self, k: Strikes) -> float | np.ndarray:
+    def d2w_dk2(self, K: Strikes) -> float | np.ndarray:
         """
-        Second derivative ∂²w/∂k².
+        Second derivative ∂²w/∂k² evaluated at k = log(K/F).
 
         Parameters
         ----------
-        k : log-strike(s). Accepts float, list[float], or np.ndarray.
+        K : strike price(s). Accepts float, list[float], or np.ndarray.
 
         Returns
         -------
-        float if k was scalar, np.ndarray otherwise.
+        float if K was scalar, np.ndarray otherwise.
         """
-        k_arr, scalar = self._to_array(k)
+        K_arr, scalar = self._to_array(K)
+        k_arr = np.log(K_arr / self.F)
         b, m, sigma = self.b, self.m, self.sigma
         d = k_arr - m
         result = b * sigma ** 2 / (sigma ** 2 + d ** 2) ** 1.5
         return self._maybe_scalar(result, scalar)
 
-    def implied_vol(self, k: Strikes, T: float) -> float | np.ndarray:
+    def implied_vol(self, K: Strikes) -> float | np.ndarray:
         """
-        Black-Scholes implied volatility σ_BS(k, T) = sqrt(w(k) / T).
+        Black-Scholes implied volatility σ_BS(K) = sqrt(w(K) / T).
 
         Parameters
         ----------
-        k : log-strike(s) log(K/F). Accepts float, list[float], or np.ndarray.
-        T : maturity in years.
+        K : strike price(s). Accepts float, list[float], or np.ndarray.
 
         Returns
         -------
-        float if k was scalar, np.ndarray otherwise.
+        float if K was scalar, np.ndarray otherwise.
 
         Raises
         ------
-        ValueError if any element of w(k) is negative.
+        ValueError if any element of w(K) is negative.
         """
-        w = self.implied_variance(k)
+        w = self.implied_variance(K)
         w_arr = np.atleast_1d(np.asarray(w, dtype=np.float64))
         if np.any(w_arr < 0):
             bad = w_arr[w_arr < 0]
             raise ValueError(f"Negative implied variance(s) encountered: {bad}")
-        result = np.sqrt(w_arr / T)
-        # Unwrap to scalar if input was scalar
-        scalar = isinstance(k, (int, float))
+        result = np.sqrt(w_arr / self.T)
+        scalar = isinstance(K, (int, float))
         return self._maybe_scalar(result, scalar)
 
     # ------------------------------------------------------------------ #
     # Butterfly arbitrage: g(k) function                                  #
     # ------------------------------------------------------------------ #
 
-    def g(self, k: Strikes) -> float | np.ndarray:
+    def g(self, K: Strikes) -> float | np.ndarray:
         """
-        The Gatheral-Jacquier g(k) function (Lemma 2.2, Gatheral & Jacquier 2013).
+        The Gatheral-Jacquier g(K) function (Lemma 2.2, Gatheral & Jacquier 2013).
 
-        A slice is free of butterfly arbitrage if and only if g(k) >= 0 for all k.
-        Equivalently, g(k) >= 0 is necessary and sufficient for the risk-neutral
-        density to be non-negative at k.
+        A slice is free of butterfly arbitrage if and only if g(K) >= 0 for all K.
+        Equivalently, g(K) >= 0 is necessary and sufficient for the risk-neutral
+        density to be non-negative at K.
 
-        Definition:
-            g(k) = (1 - k*w'/(2w))²  -  (w'/2)² * (1/w + 1/4)  +  w''/2
+        Definition (in terms of k = log(K/F)):
+            g(K) = (1 - k*w'/(2w))²  -  (w'/2)² * (1/w + 1/4)  +  w''/2
 
         Parameters
         ----------
-        k : log-strike(s). Accepts float, list[float], or np.ndarray.
+        K : strike price(s). Accepts float, list[float], or np.ndarray.
 
         Returns
         -------
-        float if k was scalar, np.ndarray otherwise.
+        float if K was scalar, np.ndarray otherwise.
         """
-        k_arr, scalar = self._to_array(k)
-        w   = np.atleast_1d(np.asarray(self.implied_variance(k_arr), dtype=np.float64))
-        wp  = np.atleast_1d(np.asarray(self.dw_dk(k_arr),            dtype=np.float64))
-        wpp = np.atleast_1d(np.asarray(self.d2w_dk2(k_arr),          dtype=np.float64))
+        K_arr, scalar = self._to_array(K)
+        k_arr = np.log(K_arr / self.F)
+        w   = np.atleast_1d(np.asarray(self.implied_variance(K_arr), dtype=np.float64))
+        wp  = np.atleast_1d(np.asarray(self.dw_dk(K_arr),            dtype=np.float64))
+        wpp = np.atleast_1d(np.asarray(self.d2w_dk2(K_arr),          dtype=np.float64))
 
         term1 = (1.0 - k_arr * wp / (2.0 * w)) ** 2
         term2 = (wp ** 2 / 4.0) * (1.0 / w + 0.25)
@@ -208,34 +214,35 @@ class SVIJumpWings:
     # Risk-neutral density                                                 #
     # ------------------------------------------------------------------ #
 
-    def risk_neutral_density(self, k: Strikes) -> float | np.ndarray:
+    def risk_neutral_density(self, K: Strikes) -> float | np.ndarray:
         """
         Risk-neutral probability density over log-forward moneyness k = log(K/F).
 
         From Gatheral & Jacquier (2013), Lemma 2.2:
 
-            p(k) = g(k) / sqrt(2π w(k)) · exp(−d₂(k)² / 2)
+            p(K) = g(K) / sqrt(2π w(K)) · exp(−d₂(K)² / 2)
 
         where:
-            w(k)  = total implied variance (σ²_BS · T), from implied_variance(k)
-            d₂(k) = −k / sqrt(w(k)) − sqrt(w(k)) / 2
-            g(k)  = Gatheral-Jacquier function, from g(k)
+            w(K)  = total implied variance (σ²_BS · T), from implied_variance(K)
+            d₂(K) = −k / sqrt(w(K)) − sqrt(w(K)) / 2,  k = log(K/F)
+            g(K)  = Gatheral-Jacquier function, from g(K)
 
-        T does not appear separately because w(k) is already total variance.
+        T does not appear separately because w(K) is already total variance.
         The density integrates to 1 over k when the slice is butterfly-arbitrage-free.
 
         Parameters
         ----------
-        k : log-forward moneyness log(K/F). Accepts float, list[float], or np.ndarray.
+        K : strike price(s). Accepts float, list[float], or np.ndarray.
 
         Returns
         -------
-        float if k was scalar, np.ndarray otherwise.
+        float if K was scalar, np.ndarray otherwise.
         """
-        k_arr, scalar = self._to_array(k)
+        K_arr, scalar = self._to_array(K)
+        k_arr = np.log(K_arr / self.F)
 
-        w      = np.atleast_1d(np.asarray(self.implied_variance(k_arr), dtype=np.float64))
-        g_vals = np.atleast_1d(np.asarray(self.g(k_arr),                dtype=np.float64))
+        w      = np.atleast_1d(np.asarray(self.implied_variance(K_arr), dtype=np.float64))
+        g_vals = np.atleast_1d(np.asarray(self.g(K_arr),                dtype=np.float64))
 
         sqrt_w = np.sqrt(w)
         d2     = -k_arr / sqrt_w - 0.5 * sqrt_w
@@ -245,35 +252,35 @@ class SVIJumpWings:
 
     def is_butterfly_arbitrage_free(
         self,
-        k_grid: np.ndarray | None = None,
+        K_grid: np.ndarray | None = None,
         tol: float = 0.0,
     ) -> bool:
         """
-        Returns True if g(k) >= tol for all k in k_grid (Lemma 2.2).
+        Returns True if g(K) >= tol for all K in K_grid (Lemma 2.2).
 
         Parameters
         ----------
-        k_grid : array of log-strikes to check. Defaults to [-5, 5] with 2001 points.
+        K_grid : array of strikes to check. Defaults to F·exp([-5, 5]) with 2001 points.
         tol    : numerical tolerance; set slightly negative to allow for floating-point
                  noise in near-boundary cases.
         """
-        if k_grid is None:
-            k_grid = np.linspace(-5.0, 5.0, 2001)
-        return bool(np.all(self.g(k_grid) >= tol))
+        if K_grid is None:
+            K_grid = self.F * np.exp(np.linspace(-5.0, 5.0, 2001))
+        return bool(np.all(self.g(K_grid) >= tol))
 
     def min_g(
         self,
-        k_grid: np.ndarray | None = None,
+        K_grid: np.ndarray | None = None,
     ) -> tuple[float, float]:
         """
-        Returns (k*, g(k*)) where k* minimises g over k_grid.
+        Returns (K*, g(K*)) where K* is the strike that minimises g over K_grid.
         Useful as a scalar diagnostic of how close the slice is to butterfly arbitrage.
         """
-        if k_grid is None:
-            k_grid = np.linspace(-5.0, 5.0, 2001)
-        g_vals = self.g(k_grid)
+        if K_grid is None:
+            K_grid = self.F * np.exp(np.linspace(-5.0, 5.0, 2001))
+        g_vals = self.g(K_grid)
         idx = int(np.argmin(g_vals))
-        return float(k_grid[idx]), float(g_vals[idx])
+        return float(K_grid[idx]), float(g_vals[idx])
 
     # ------------------------------------------------------------------ #
     # Strike arbitrage (Numerix 2024, Section 4.2)                        #
