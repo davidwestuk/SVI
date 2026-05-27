@@ -204,6 +204,45 @@ class SVIJumpWings:
         result = term1 - term2 + term3
         return self._maybe_scalar(result, scalar)
 
+    # ------------------------------------------------------------------ #
+    # Risk-neutral density                                                 #
+    # ------------------------------------------------------------------ #
+
+    def risk_neutral_density(self, k: Strikes) -> float | np.ndarray:
+        """
+        Risk-neutral probability density over log-forward moneyness k = log(K/F).
+
+        From Gatheral & Jacquier (2013), Lemma 2.2:
+
+            p(k) = g(k) / sqrt(2π w(k)) · exp(−d₂(k)² / 2)
+
+        where:
+            w(k)  = total implied variance (σ²_BS · T), from implied_variance(k)
+            d₂(k) = −k / sqrt(w(k)) − sqrt(w(k)) / 2
+            g(k)  = Gatheral-Jacquier function, from g(k)
+
+        T does not appear separately because w(k) is already total variance.
+        The density integrates to 1 over k when the slice is butterfly-arbitrage-free.
+
+        Parameters
+        ----------
+        k : log-forward moneyness log(K/F). Accepts float, list[float], or np.ndarray.
+
+        Returns
+        -------
+        float if k was scalar, np.ndarray otherwise.
+        """
+        k_arr, scalar = self._to_array(k)
+
+        w      = np.atleast_1d(np.asarray(self.implied_variance(k_arr), dtype=np.float64))
+        g_vals = np.atleast_1d(np.asarray(self.g(k_arr),                dtype=np.float64))
+
+        sqrt_w = np.sqrt(w)
+        d2     = -k_arr / sqrt_w - 0.5 * sqrt_w
+        result = g_vals * np.exp(-0.5 * d2 ** 2) / (sqrt_w * np.sqrt(2.0 * np.pi))
+
+        return self._maybe_scalar(result, scalar)
+
     def is_butterfly_arbitrage_free(
         self,
         k_grid: np.ndarray | None = None,
